@@ -30,15 +30,26 @@ digraph EVPN_Fabric {
     fontsize=9
   ];
 
-  // ===================== DATA CENTER =====================
+  // ===================== DATA CENTERS =====================
   DC1 [
     fillcolor="#BFD7FF",
     label=<
-      <b>DATA CENTER</b><br/>
-      NVR: 172.16.10.10<br/>
-      Storage: 172.16.20.10<br/>
-      GW: 172.16.254.1<br/>
-      Services / applications
+      <b>DATA CENTER 1</b><br/>
+      DC1 Edge / eBGP handoff<br/>
+      NVR / services<br/>
+      Storage / applications<br/>
+      L3 northbound boundary
+    >
+  ];
+
+  DC2 [
+    fillcolor="#BFD7FF",
+    label=<
+      <b>DATA CENTER 2</b><br/>
+      DC2 Edge / eBGP handoff<br/>
+      DR / secondary services<br/>
+      Storage / applications<br/>
+      L3 northbound boundary
     >
   ];
 
@@ -51,7 +62,7 @@ digraph EVPN_Fabric {
       Lo1 / BGP RID: 10.255.1.1/32<br/>
       Underlay: OSPF Area 0<br/>
       Overlay: BGP EVPN peer<br/>
-      Northbound: DC handoff / route policy
+      Northbound: eBGP to DC1 + DC2
     >
   ];
 
@@ -63,7 +74,7 @@ digraph EVPN_Fabric {
       Lo1 / BGP RID: 10.255.1.2/32<br/>
       Underlay: OSPF Area 0<br/>
       Overlay: BGP EVPN peer<br/>
-      Northbound: DC handoff / route policy
+      Northbound: eBGP to DC1 + DC2
     >
   ];
 
@@ -116,12 +127,13 @@ digraph EVPN_Fabric {
       • OSPF underlay runs on routed fabric links and provides ECMP.<br align="left"/>
       • Same anycast gateway IPs exist at every site for VLAN 110 and VLAN 210.<br align="left"/>
       • Border Leafs and Leafs participate in BOTH OSPF and BGP EVPN.<br align="left"/>
-      • End devices are shown attached to the site pair, not a single leaf.<br align="left"/>
+      • Each border leaf is dual-homed northbound to DC1 and DC2 using routed L3 links.<br align="left"/>
       • Spines are shown as OSPF-only in this design; BGP RR is optional.
     >
   ];
 
   // ===================== RANKS =====================
+  { rank=same; DC1; DC2; }
   { rank=same; BL_A; BL_B; }
   { rank=same; SP1; SP2; }
   { rank=same; CAB1_A; CAB1_B; YD1_A; YD1_B; BLDA_A; BLDA_B; YD2_A; YD2_B; }
@@ -129,9 +141,10 @@ digraph EVPN_Fabric {
   { rank=same; NOTES; }
 
   // ===================== ALIGNMENT =====================
+  DC1 -> DC2 [style=invis, weight=30];
   BL_A -> BL_B [style=invis, weight=30];
   DC1 -> BL_A [style=invis];
-  DC1 -> BL_B [style=invis];
+  DC2 -> BL_B [style=invis];
 
   CAB1_A -> CAB1_B [style=invis, weight=100];
   YD1_A  -> YD1_B  [style=invis, weight=100];
@@ -162,9 +175,11 @@ digraph EVPN_Fabric {
   YD2_A  -> YD2_B  [dir=none, style=dashed, color="#666666", label="site pair interconnect / vPC or MLAG", constraint=false];
   BL_A   -> BL_B   [dir=none, style=dashed, color="#666666", label="border pair interconnect / vPC or MLAG", constraint=false];
 
-  // ===================== UNDERLAY =====================
-  DC1 -> BL_A [color="#FF8C00", label="L3 to DC"];
-  DC1 -> BL_B [color="#FF8C00", label="L3 to DC"];
+  // ===================== UNDERLAY / NORTHBOUND =====================
+  DC1 -> BL_A [color="#FF8C00", label="L3 to DC1"];
+  DC2 -> BL_A [color="#FF8C00", label="L3 to DC2"];
+  DC1 -> BL_B [color="#FF8C00", label="L3 to DC1"];
+  DC2 -> BL_B [color="#FF8C00", label="L3 to DC2"];
 
   BL_A -> SP1 [color="#FF8C00", label="OSPF underlay"];
   BL_A -> SP2 [color="#FF8C00", label="OSPF underlay"];
