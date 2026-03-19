@@ -1,0 +1,206 @@
+digraph EVPN_Fabric {
+  graph [
+    rankdir=TB,
+    splines=line,
+    nodesep=0.75,
+    ranksep=1.0,
+    pad=0.3,
+    bgcolor="white",
+    fontname="Helvetica",
+    fontsize=18,
+    labelloc="t",
+    label="EVPN / VXLAN Fabric — OSPF Underlay + BGP EVPN Overlay + Anycast Gateway"
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="black",
+    penwidth=1.4,
+    fontname="Helvetica",
+    fontsize=10,
+    margin="0.14,0.10"
+  ];
+
+  edge [
+    color="black",
+    penwidth=1.2,
+    arrowsize=0.6,
+    fontname="Helvetica",
+    fontsize=9
+  ];
+
+  // ===================== DATA CENTER =====================
+  DC1 [
+    fillcolor="#BFD7FF",
+    label=<
+      <b>DATA CENTER</b><br/>
+      NVR: 172.16.10.10<br/>
+      Storage: 172.16.20.10<br/>
+      GW: 172.16.254.1<br/>
+      Services / applications
+    >
+  ];
+
+  // ===================== BORDER =====================
+  BL_A [
+    fillcolor="#FFD77A",
+    label=<
+      <b>Border Leaf A</b><br/>
+      Lo0 / VTEP: 10.255.0.1/32<br/>
+      Lo1 / BGP RID: 10.255.1.1/32<br/>
+      Underlay: OSPF Area 0<br/>
+      Overlay: BGP EVPN peer<br/>
+      Northbound: DC handoff / route policy
+    >
+  ];
+
+  BL_B [
+    fillcolor="#FFD77A",
+    label=<
+      <b>Border Leaf B</b><br/>
+      Lo0 / VTEP: 10.255.0.2/32<br/>
+      Lo1 / BGP RID: 10.255.1.2/32<br/>
+      Underlay: OSPF Area 0<br/>
+      Overlay: BGP EVPN peer<br/>
+      Northbound: DC handoff / route policy
+    >
+  ];
+
+  // ===================== SPINES =====================
+  SP1 [
+    fillcolor="#D6C6FF",
+    label=<
+      <b>Spine 1</b><br/>
+      Lo0: 10.255.255.1/32<br/>
+      Role: OSPF underlay / ECMP<br/>
+      Design: OSPF-only spine
+    >
+  ];
+
+  SP2 [
+    fillcolor="#D6C6FF",
+    label=<
+      <b>Spine 2</b><br/>
+      Lo0: 10.255.255.2/32<br/>
+      Role: OSPF underlay / ECMP<br/>
+      Design: OSPF-only spine
+    >
+  ];
+
+  // ===================== SITE PAIRS =====================
+  CAB1_A [fillcolor="#BFE7BF", group="cab1", label=<<b>Cabinet 1 - Leaf A</b><br/>Lo0 / VTEP: 10.255.10.1/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+  CAB1_B [fillcolor="#BFE7BF", group="cab1", label=<<b>Cabinet 1 - Leaf B</b><br/>Lo0 / VTEP: 10.255.10.2/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+
+  YD1_A [fillcolor="#BFE7BF", group="yd1", label=<<b>Yard 1 - Leaf A</b><br/>Lo0 / VTEP: 10.255.20.1/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+  YD1_B [fillcolor="#BFE7BF", group="yd1", label=<<b>Yard 1 - Leaf B</b><br/>Lo0 / VTEP: 10.255.20.2/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+
+  BLDA_A [fillcolor="#BFE7BF", group="blda", label=<<b>Building A - Leaf A</b><br/>Lo0 / VTEP: 10.255.30.1/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+  BLDA_B [fillcolor="#BFE7BF", group="blda", label=<<b>Building A - Leaf B</b><br/>Lo0 / VTEP: 10.255.30.2/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+
+  YD2_A [fillcolor="#BFE7BF", group="yd2", label=<<b>Yard 2 - Leaf A</b><br/>Lo0 / VTEP: 10.255.40.1/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+  YD2_B [fillcolor="#BFE7BF", group="yd2", label=<<b>Yard 2 - Leaf B</b><br/>Lo0 / VTEP: 10.255.40.2/32<br/>Underlay: OSPF Area 0<br/>Overlay: BGP EVPN peer<br/>VRF_CAMERAS / VNI 50110<br/>VLAN 110 / GW 192.168.110.1/24<br/>VRF_SENSORS / VNI 50210<br/>VLAN 210 / GW 192.168.210.1/24<br/>Anycast GW MAC: 0000.2222.3333>];
+
+  // ===================== END DEVICES =====================
+  DEV1 [fillcolor="#F5F5F5", group="cab1", label=<<b>Cabinet 1 End Devices</b><br/>Camera-CAB1-01: 192.168.110.11<br/>Sensor-CAB1-01: 192.168.210.11<br/>Default GWs: 192.168.110.1 / 192.168.210.1<br/>Dual-homed logically to site leaf pair>];
+  DEV2 [fillcolor="#F5F5F5", group="yd1", label=<<b>Yard 1 End Devices</b><br/>Camera-YD1-01: 192.168.110.21<br/>Sensor-YD1-01: 192.168.210.21<br/>Default GWs: 192.168.110.1 / 192.168.210.1<br/>Dual-homed logically to site leaf pair>];
+  DEV3 [fillcolor="#F5F5F5", group="blda", label=<<b>Building A End Devices</b><br/>Camera-BLDA-01: 192.168.110.31<br/>Sensor-BLDA-01: 192.168.210.31<br/>Default GWs: 192.168.110.1 / 192.168.210.1<br/>Dual-homed logically to site leaf pair>];
+  DEV4 [fillcolor="#F5F5F5", group="yd2", label=<<b>Yard 2 End Devices</b><br/>Camera-YD2-01: 192.168.110.41<br/>Sensor-YD2-01: 192.168.210.41<br/>Default GWs: 192.168.110.1 / 192.168.210.1<br/>Dual-homed logically to site leaf pair>];
+
+  // ===================== NOTES =====================
+  NOTES [
+    fillcolor="#F5F5F5",
+    label=<
+      <b>Notes</b><br align="left"/>
+      • BGP EVPN overlay runs between leaf pairs and border leafs only.<br align="left"/>
+      • OSPF underlay runs on routed fabric links and provides ECMP.<br align="left"/>
+      • Same anycast gateway IPs exist at every site for VLAN 110 and VLAN 210.<br align="left"/>
+      • Border Leafs and Leafs participate in BOTH OSPF and BGP EVPN.<br align="left"/>
+      • End devices are shown attached to the site pair, not a single leaf.<br align="left"/>
+      • Spines are shown as OSPF-only in this design; BGP RR is optional.
+    >
+  ];
+
+  // ===================== RANKS =====================
+  { rank=same; BL_A; BL_B; }
+  { rank=same; SP1; SP2; }
+  { rank=same; CAB1_A; CAB1_B; YD1_A; YD1_B; BLDA_A; BLDA_B; YD2_A; YD2_B; }
+  { rank=same; DEV1; DEV2; DEV3; DEV4; }
+  { rank=same; NOTES; }
+
+  // ===================== ALIGNMENT =====================
+  BL_A -> BL_B [style=invis, weight=30];
+  DC1 -> BL_A [style=invis];
+  DC1 -> BL_B [style=invis];
+
+  CAB1_A -> CAB1_B [style=invis, weight=100];
+  YD1_A  -> YD1_B  [style=invis, weight=100];
+  BLDA_A -> BLDA_B [style=invis, weight=100];
+  YD2_A  -> YD2_B  [style=invis, weight=100];
+
+  CAB1_B -> YD1_A [style=invis, weight=15];
+  YD1_B  -> BLDA_A [style=invis, weight=15];
+  BLDA_B -> YD2_A [style=invis, weight=15];
+
+  DEV1 -> DEV2 [style=invis, weight=20];
+  DEV2 -> DEV3 [style=invis, weight=20];
+  DEV3 -> DEV4 [style=invis, weight=20];
+
+  CAB1_A -> DEV1 [style=invis, weight=80];
+  CAB1_B -> DEV1 [style=invis, weight=80];
+  YD1_A  -> DEV2 [style=invis, weight=80];
+  YD1_B  -> DEV2 [style=invis, weight=80];
+  BLDA_A -> DEV3 [style=invis, weight=80];
+  BLDA_B -> DEV3 [style=invis, weight=80];
+  YD2_A  -> DEV4 [style=invis, weight=80];
+  YD2_B  -> DEV4 [style=invis, weight=80];
+
+  // ===================== PAIR LINKS =====================
+  CAB1_A -> CAB1_B [dir=none, style=dashed, color="#666666", label="site pair interconnect / vPC or MLAG", constraint=false];
+  YD1_A  -> YD1_B  [dir=none, style=dashed, color="#666666", label="site pair interconnect / vPC or MLAG", constraint=false];
+  BLDA_A -> BLDA_B [dir=none, style=dashed, color="#666666", label="site pair interconnect / vPC or MLAG", constraint=false];
+  YD2_A  -> YD2_B  [dir=none, style=dashed, color="#666666", label="site pair interconnect / vPC or MLAG", constraint=false];
+  BL_A   -> BL_B   [dir=none, style=dashed, color="#666666", label="border pair interconnect / vPC or MLAG", constraint=false];
+
+  // ===================== UNDERLAY =====================
+  DC1 -> BL_A [color="#FF8C00", label="L3 to DC"];
+  DC1 -> BL_B [color="#FF8C00", label="L3 to DC"];
+
+  BL_A -> SP1 [color="#FF8C00", label="OSPF underlay"];
+  BL_A -> SP2 [color="#FF8C00", label="OSPF underlay"];
+  BL_B -> SP1 [color="#FF8C00", label="OSPF underlay"];
+  BL_B -> SP2 [color="#FF8C00", label="OSPF underlay"];
+
+  SP1 -> CAB1_A [color="#FF8C00", minlen=2];
+  SP1 -> CAB1_B [color="#FF8C00", minlen=2];
+  SP1 -> YD1_A  [color="#FF8C00", minlen=2];
+  SP1 -> YD1_B  [color="#FF8C00", minlen=2];
+  SP1 -> BLDA_A [color="#FF8C00", minlen=2];
+  SP1 -> BLDA_B [color="#FF8C00", minlen=2];
+  SP1 -> YD2_A  [color="#FF8C00", minlen=2];
+  SP1 -> YD2_B  [color="#FF8C00", minlen=2];
+
+  SP2 -> CAB1_A [color="#1E90FF", minlen=2];
+  SP2 -> CAB1_B [color="#1E90FF", minlen=2];
+  SP2 -> YD1_A  [color="#1E90FF", minlen=2];
+  SP2 -> YD1_B  [color="#1E90FF", minlen=2];
+  SP2 -> BLDA_A [color="#1E90FF", minlen=2];
+  SP2 -> BLDA_B [color="#1E90FF", minlen=2];
+  SP2 -> YD2_A  [color="#1E90FF", minlen=2];
+  SP2 -> YD2_B  [color="#1E90FF", minlen=2];
+
+  // ===================== ACCESS =====================
+  DEV1 -> CAB1_A [dir=none, color="black", label="access VLANs", minlen=1];
+  DEV1 -> CAB1_B [dir=none, color="black", label="", minlen=1];
+
+  DEV2 -> YD1_A [dir=none, color="black", label="access VLANs", minlen=1];
+  DEV2 -> YD1_B [dir=none, color="black", label="", minlen=1];
+
+  DEV3 -> BLDA_A [dir=none, color="black", label="access VLANs", minlen=1];
+  DEV3 -> BLDA_B [dir=none, color="black", label="", minlen=1];
+
+  DEV4 -> YD2_A [dir=none, color="black", label="access VLANs", minlen=1];
+  DEV4 -> YD2_B [dir=none, color="black", label="", minlen=1];
+
+  DEV1 -> NOTES [style=invis];
+}
