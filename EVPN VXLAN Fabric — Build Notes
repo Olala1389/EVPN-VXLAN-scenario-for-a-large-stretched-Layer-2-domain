@@ -3,7 +3,7 @@
 
 See the diagram in this repository:
 
-`/docs/graphviz_site_diagram.svg`
+`graphviz_site_diagram.svg`
 
 # EVPN VXLAN Fabric — Build Notes
 
@@ -42,67 +42,50 @@ Each site has two leaf switches, but the actual field devices are simple:
 
 So the leaf pair needs to behave like one logical access block. That is what MLAG / vPC gives us.
 
-It lets the edge stay operationally simple while still giving us redundancy and active-active forwarding upstream.
+Its role in this design is strictly the **local edge pairing problem**:
+
+- present the site as one logical access block
+- provide switch-level redundancy at the edge
+- keep both leafs active for forwarding
+- avoid depending on STP for normal operation
+
+The first-hop routing behavior is handled separately (see the next section on Anycast Gateway).
 
 ### What problem this solves
 
-Without MLAG / vPC, the edge becomes awkward very quickly:
+Without MLAG / vPC:
 
-- if a device is attached to only one leaf, that leaf is a single point of failure
-- if two switches are used without proper multi-chassis logic, you fall back into STP-style loop problems
+- a device connected to a single leaf introduces a **single point of failure**
+- dual connections without coordination lead to **loops or blocked links (STP)**
 
 With MLAG / vPC:
 
-- the leaf pair acts like one logical switch toward downstream access
-- both leafs are active
-- STP is not the mechanism carrying redundancy here
-- uplinks and forwarding can stay active-active
+- the leaf pair behaves like one logical switch
+- both leafs can forward traffic
+- redundancy is built into the pair without relying on STP
 
 ### Alternatives (and why we’re not using them)
 
 #### Single-homed access
-- simplest possible model
-- ❌ no switch-level redundancy at the edge
+- simplest model
+- ❌ no switch-level redundancy
 
 #### STP-based dual connection
 - ❌ blocked links
-- ❌ slower recovery
-- ❌ reintroduces the Layer 2 behavior we are trying to get away from
+- ❌ slow convergence
+- ❌ brings back legacy Layer 2 behavior
 
 #### EVPN multihoming (ESI)
-- more modern and elegant on paper
-- removes the need for a traditional MLAG peer-link
+- modern and elegant
+- removes the need for a peer-link
 
-But for this environment:
-- ❌ more complex
-- ❌ not always implemented consistently across platforms
-- ❌ harder to operate initially
+But in this environment:
 
-So MLAG / vPC is the more practical choice here.
+- ❌ more complex operationally
+- ❌ not always consistently supported
+- ❌ harder to troubleshoot initially
 
-### Why we’re not using HSRP on the edge leafs
-
-HSRP is not the right fit in this design because it works as **active / standby**, while EVPN + VXLAN fabrics are designed around **active / active** forwarding.
-
-With HSRP:
-
-- one leaf is the active gateway
-- the other is mostly waiting
-
-That immediately creates a few problems:
-
-- wasted links and wasted forwarding capacity
-- suboptimal traffic paths
-- extra hairpinning across the pair
-- slower failover behavior than a distributed anycast gateway model
-
-In this design, we use an **anycast gateway** instead:
-
-- same gateway IP on both leafs
-- same gateway MAC on both leafs
-- both leafs can route traffic locally
-
-So the gateway is distributed, not tied to one “active” node.
+MLAG / vPC is the more practical and stable choice here.
 
 ### What devices are involved
 
@@ -111,97 +94,97 @@ Per site:
 - Leaf A
 - Leaf B
 
-Between them there are two separate links or link groups:
+Between them:
 
-- **peer-link** — Layer 2 trunk used for vPC state and peer synchronization
-- **keepalive link** — Layer 3 heartbeat used to detect peer liveliness and avoid split-brain
+- **peer-link (L2 trunk)**  
+  carries state synchronization and control traffic between the pair
 
-These should be separate physically and logically.
+- **keepalive link (L3)**  
+  used for liveliness detection and split-brain prevention
+
+These should be physically and logically separate.
 
 ### How it behaves
 
 #### From the edge perspective
 
-The access side should feel simple:
+The access layer appears simple:
 
 - one local switching domain
-- one default gateway
-- one consistent VLAN presence
+- consistent VLAN presence
+- no visible dual-switch complexity
 
-That does **not** mean a single-port camera is magically plugged into both leafs directly. In real deployments, the redundancy is usually provided by the access layer or local switching arrangement upstream of the camera/sensor, not by the endpoint itself.
+Note:
+
+A single-port camera is not directly connected to both leafs.  
+Redundancy depends on how the upstream access layer (if present) is designed.
 
 #### Inside the pair
 
 The two leafs:
 
-- synchronize state
-- coordinate forwarding
-- elect a primary and secondary role for control purposes
+- synchronize MAC/state information
+- coordinate forwarding decisions
+- elect primary/secondary roles (control-plane only)
 - both remain active for forwarding
 
-Primary vs secondary here is not the same as active vs standby forwarding. It is just a control-plane role.
+Primary vs secondary is not active vs standby — both forward traffic.
 
 #### Interaction with EVPN
 
-Each leaf still remains:
+Each leaf is still:
 
-- its own VTEP
-- its own control-plane node
+- an independent VTEP
+- an independent control-plane node
 
-But the pair behaves consistently at the edge because:
+But at the edge:
 
-- both leafs use the same anycast gateway
-- both participate in the same local VLANs
-- EVPN sees two aligned leafs, not one centralized gateway
+- both leafs participate in the same VLANs
+- both behave consistently toward connected devices
+- EVPN sees two coordinated leafs at the same site
 
 ### Traffic flow examples
 
 #### Case 1 — Device → fabric
 
-1. Device sends traffic toward the local access network
-2. Traffic reaches the leaf pair
-3. The receiving leaf routes locally using the anycast gateway
-4. If the destination is remote, traffic is sent into the VXLAN fabric
+1. Device sends traffic toward the local network
+2. Traffic reaches one of the leafs
+3. The leaf processes the traffic locally
+4. If needed, traffic is forwarded into the VXLAN fabric
 
 #### Case 2 — Fabric → device
 
-1. Traffic arrives at the correct leaf through EVPN
-2. If the device is directly reachable from that leaf path, it is delivered
-3. If needed, the peer-link can be used internally between the pair
+1. Traffic arrives at the correct leaf via EVPN
+2. If the device is reachable locally, it is delivered
+3. If needed, the peer-link is used internally
 
 #### Case 3 — Leaf failure
 
-This needs to be stated carefully.
+- one leaf fails
+- the fabric remains operational
+- traffic continues through the surviving leaf
 
-- if one leaf fails, the fabric itself remains up
-- traffic can continue through the surviving leaf
-- **but endpoint survivability depends on how the endpoint or local access switch is connected**
+Important:
 
-So:
-
-- endpoints with redundant upstream attachment can stay reachable
+- endpoints with redundant upstream connectivity may remain reachable
 - endpoints single-homed to the failed leaf will go down
-
-That is the correct expectation.
-
 
 ### Key design rules
 
 - MLAG / vPC is local to the site only
 - it is not extended across the fabric
-- STP is not the resiliency mechanism across the fabric
-- the peer-link is not intended to be a generic transit path for fabric traffic
-- redundancy at the endpoint level depends on actual edge attachment, not just the existence of a leaf pair
+- STP is not the primary resiliency mechanism
+- the peer-link is not used as a general transit path
+- endpoint redundancy depends on actual edge connectivity
 
 ### Config — NX-OS style example
 
-#### 1. Enable features
-
+#### Enable features
 
 feature vpc
 feature lacp
 
-#### 2. Keepalive link (L3)
+#### Keepalive link (L3)
 
 **Leaf A**
 
@@ -217,7 +200,7 @@ interface ethernet1/1
   no switchport
   ip address 192.168.255.2/30
 
-#### 3. vPC domain
+#### vPC domain
 
 **Leaf A**
 
@@ -231,7 +214,7 @@ vpc domain 10
   role priority 20
   peer-keepalive destination 192.168.255.1
 
-#### 4. Peer-link (critical)
+#### Peer-link
 
 interface port-channel100
   description MLAG-PEER-LINK
@@ -240,28 +223,15 @@ interface port-channel100
   spanning-tree port type network
   vpc peer-link
 
-Add member interfaces:
-
 interface ethernet1/49
   channel-group 100 mode active
 
 interface ethernet1/50
   channel-group 100 mode active
 
-#### 5. Access or trunk port to end device / simple access switch
+#### Access / trunk ports
 
-This is the edge-facing port toward either:
-
-- the actual field device
-- or a small local access switch carrying a few devices
-
-For cameras, sensors, and most simple field devices:
-
-- no LACP
-- no port-channel on the endpoint
-- just a normal access port in the correct VLAN
-
-Example for a camera port:
+Example access port:
 
 interface ethernet1/10
   description CAMERA-CAB1-01
@@ -270,18 +240,7 @@ interface ethernet1/10
   switchport access vlan 110
   spanning-tree port type edge
 
-Example for a sensor port:
-
-interface ethernet1/11
-  description SENSOR-CAB1-01
-  switchport
-  switchport mode access
-  switchport access vlan 210
-  spanning-tree port type edge
-
-If the downstream device is a small local access switch instead of a single endpoint, then this interface can be a trunk carrying the required VLANs.
-
-Example trunk to a small local access switch:
+Example trunk to small access switch:
 
 interface ethernet1/12
   description TO-LOCAL-ACCESS-SWITCH
@@ -289,61 +248,158 @@ interface ethernet1/12
   switchport mode trunk
   switchport trunk allowed vlan 110,210
 
-### Interaction with the anycast gateway
+### Big picture takeaway
 
-The pair works cleanly because both leafs present the same gateway identity.
+MLAG / vPC solves the **edge pairing problem**:
 
-Both leafs have:
+- two switches behave as one logical access block
+- both remain active
+- redundancy is local and deterministic
+
+## 2. Anycast Gateway (Distributed Default Gateway)
+
+### Why we’re using this
+
+In traditional networks, the default gateway lives on a single device:
+
+- active / standby (HSRP/VRRP)
+- traffic hairpinning
+- dependency on one node
+
+In this design, we want:
+
+- routing at the **closest leaf**
+- no active/standby behavior
+- full alignment with EVPN’s distributed model
+
+So we make **every leaf act as the gateway**.
+
+### Core idea
+
+Each VLAN has:
+
+- the **same gateway IP**
+- the **same gateway MAC**
+- configured on **every leaf**
+
+Example:
+
+interface vlan110
+  ip address 192.168.110.1/24
+
+This same IP exists on all leafs — intentionally.
+
+### What this means in practice
+
+From the device:
+
+- one default gateway
+- one MAC address
+- normal behavior
+
+From the fabric:
+
+- every leaf can route locally
+- no central gateway exists
+
+### How ARP works
+
+All leafs share the same MAC:
 
 fabric forwarding anycast-gateway-mac 0000.2222.3333
 
-and:
+Device sends:
+
+Who has 192.168.110.1?
+
+👉 The **local leaf responds**
+
+192.168.110.1 → 0000.2222.3333
+
+### How it behaves
+
+#### Device → gateway
+
+- traffic hits the local leaf
+- leaf routes locally
+
+#### Remote destination
+
+- leaf routes packet
+- encapsulates into VXLAN
+- sends to destination leaf
+
+#### Local destination
+
+- switched locally
+- no VXLAN involved
+
+### Alternatives (and why we’re not using them)
+
+#### HSRP / VRRP
+
+- active / standby
+- inefficient paths
+- slower failover
+
+#### Centralized gateway
+
+- traffic hairpins
+- bottlenecks
+- breaks locality
+
+### Config
+
+fabric forwarding anycast-gateway-mac 0000.2222.3333
 
 interface vlan110
+  no shutdown
+  vrf member VRF_CAMERAS
   ip address 192.168.110.1/24
   fabric forwarding mode anycast-gateway
 
 interface vlan210
+  no shutdown
+  vrf member VRF_SENSORS
   ip address 192.168.210.1/24
   fabric forwarding mode anycast-gateway
 
-So:
+### Relationship with MLAG / vPC
 
-- devices always use the same gateway IP
-- both leafs can route locally
-- traffic does not need to hairpin to a single active gateway
+- MLAG handles **Layer 2 pairing**
+- Anycast Gateway handles **Layer 3 routing**
 
-### Failure scenarios
+Together:
 
-#### Peer-link failure
+- edge looks simple to devices
+- routing is fully distributed
 
-- one leaf can become isolated
-- the secondary typically shuts down its vPC-facing ports to avoid split-brain
+### Failure behavior
 
-#### One leaf down
+#### Leaf failure
 
-- the pair loses one member
-- the fabric keeps operating
-- redundancy remains only through the surviving leaf
-- endpoint impact depends on actual edge connectivity
+- remaining leaf continues as gateway
+- no failover event
 
-#### Uplink failure (leaf → spine)
+#### Uplink failure
 
-- ECMP in the underlay handles this
-- traffic shifts to the remaining path
+- underlay reroutes traffic
+- gateway behavior unchanged
 
 ### Big picture takeaway
 
-MLAG / vPC gives the edge of the fabric:
+Anycast Gateway turns the fabric into a **distributed routing system**:
 
-- physical redundancy at the switch pair
-- active-active forwarding
-- no STP dependency as the main redundancy mechanism
-- clean alignment with EVPN and anycast gateway
+every leaf = local gateway
 
-It is the piece that makes the edge behave simply while the fabric underneath stays modern and scalable.
+This enables:
 
-## 2. OSPF Underlay
+- optimal traffic paths
+- no hairpinning
+- fast convergence
+- clean EVPN integration
+
+## 3. OSPF Underlay
 
 ### Why we’re using this
 
@@ -448,7 +504,7 @@ router ospf UNDERLAY
   router-id 10.255.110.1
   log-adjacency-changes
 
-## 3. BGP EVPN Overlay
+## 4. BGP EVPN Overlay
 
 ### Why we’re using this
 
@@ -523,7 +579,6 @@ router bgp 65000
 
 ### Config — Border Leaf (example `BL_A`)
 
-```bash
 feature bgp
 feature nv overlay
 nv overlay evpn
@@ -541,7 +596,7 @@ router bgp 65000
       send-community
       send-community extended
 
-## 4. VXLAN (Data Plane)
+## 5. VXLAN (Data Plane)
 
 ### Why we’re using this
 
@@ -617,7 +672,6 @@ VRFs give us:
 
 ### Config
 
-```bash
 vrf context VRF_CAMERAS
   vni 51000
   rd auto
@@ -631,253 +685,6 @@ vrf context VRF_SENSORS
   address-family ipv4 unicast
     route-target both auto
     route-target both auto evpn
-
-## 6. Anycast Gateway (Distributed Default Gateway)
-
-### Why we’re using this
-
-In a traditional network, the default gateway lives on a single device.
-
-That creates:
-
-- active / standby behavior (HSRP/VRRP)
-- suboptimal traffic paths
-- unnecessary dependency on one node
-
-In this design, we want:
-
-- routing to happen **at the closest leaf**
-- no dependency on a single “active” gateway
-- full alignment with EVPN (distributed architecture)
-
-So instead of one gateway, we make **every leaf act as the gateway**.
-
----
-
-### Core idea
-
-Each VLAN has:
-
-- the **same gateway IP**
-- the **same gateway MAC**
-- configured on **every leaf**
-
-Example:
-
-```bash
-interface vlan110
-  ip address 192.168.110.1/24
-```
-
-This exact same IP exists on all leafs.
-
-That is intentional.
-
----
-
-### What this actually means
-
-From the device perspective:
-
-- there is one default gateway (`192.168.110.1`)
-- ARP resolves to a single MAC
-- the network behaves normally
-
-From the fabric perspective:
-
-- every leaf can route for that subnet
-- traffic is handled locally whenever possible
-
----
-
-### How ARP works (important)
-
-All leafs share the same gateway MAC:
-
-```bash
-fabric forwarding anycast-gateway-mac 0000.2222.3333
-```
-
-So when a device sends ARP:
-
-```text
-Who has 192.168.110.1?
-```
-
-👉 The **local leaf responds**
-
-The device learns:
-
-```text
-192.168.110.1 → 0000.2222.3333
-```
-
-That MAC is identical across all leafs, but the device only talks to the one it is physically connected to.
-
----
-
-### How it behaves
-
-#### Device → gateway
-
-1. Device sends traffic to default gateway MAC
-2. Traffic hits the local leaf
-3. Leaf routes locally (no need to go elsewhere)
-
----
-
-#### Remote destination (another site)
-
-1. Leaf routes packet
-2. Encapsulates into VXLAN
-3. Sends across fabric to correct destination leaf
-
----
-
-#### Local destination (same subnet, same site)
-
-1. Leaf switches locally
-2. No VXLAN involved
-
----
-
-### Why this is important
-
-This gives you:
-
-#### 1. Local routing (no hairpin)
-
-Traffic exits the fabric at the **closest leaf**, not a centralized gateway.
-
----
-
-#### 2. Active-active behavior
-
-- both leafs are always forwarding
-- no standby node
-- no failover event
-
----
-
-#### 3. Clean EVPN integration
-
-EVPN expects:
-
-- distributed gateways
-- consistent MAC/IP advertisement
-
-Anycast gateway matches this model exactly.
-
----
-
-### Alternatives (and why we’re not using them)
-
-#### HSRP / VRRP
-
-- active / standby model
-- traffic forced through one leaf
-- suboptimal paths
-- slower failover
-
-This conflicts with the distributed nature of EVPN.
-
----
-
-#### Centralized gateway
-
-- all traffic hairpins through a single node
-- creates bottlenecks
-- breaks locality
-
----
-
-### Config
-
-```bash
-fabric forwarding anycast-gateway-mac 0000.2222.3333
-
-interface vlan110
-  no shutdown
-  vrf member VRF_CAMERAS
-  ip address 192.168.110.1/24
-  fabric forwarding mode anycast-gateway
-
-interface vlan210
-  no shutdown
-  vrf member VRF_SENSORS
-  ip address 192.168.210.1/24
-  fabric forwarding mode anycast-gateway
-```
-
----
-
-### Relationship with MLAG / vPC
-
-MLAG handles:
-
-- Layer 2 adjacency
-- dual-leaf access behavior
-
-Anycast gateway handles:
-
-- Layer 3 routing at the edge
-
-Together, they provide:
-
-- simple edge behavior for devices
-- distributed routing inside the fabric
-
----
-
-### Important nuance
-
-Even though:
-
-- the same IP exists on multiple leafs
-
-There is **no conflict**, because:
-
-- each leaf only responds for traffic it receives locally
-- EVPN ensures consistency of MAC/IP information across the fabric
-
----
-
-### Failure behavior
-
-#### One leaf fails
-
-- the other leaf continues to act as gateway
-- no gateway failover event occurs
-- traffic continues using the surviving leaf
-
-#### Uplink failure
-
-- underlay ECMP reroutes traffic
-- no impact to gateway behavior
-
----
-
-### Big picture takeaway
-
-The anycast gateway turns the fabric into a **distributed routing system**.
-
-Instead of:
-
-```text
-one gateway → many access devices
-```
-
-You now have:
-
-```text
-many gateways (leafs) → each serving locally
-```
-
-That is what enables:
-
-- optimal traffic paths
-- fast convergence
-- clean integration with EVPN
 
 ## 7. Border Leaf Northbound Connectivity & Route Flow (EVPN ↔ VRF ↔ eBGP)
 
@@ -905,8 +712,6 @@ This gives us:
 * control over path selection  
 * scalability as the network grows  
 
----
-
 ### Alternatives (and why we’re not using them)
 
 #### Stretch VLANs into the DC
@@ -928,27 +733,20 @@ This gives us:
 * possible  
 * ❌ mixes underlay transport with external routing domains  
 
----
-
 ### Physical layout
 
-```text
 BL_A ─── DC1
 BL_A ─── DC2
 
 BL_B ─── DC1
 BL_B ─── DC2
-```
 
 Each border leaf has two routed uplinks — one into each DC.
-
----
 
 ### Interface example
 
 #### `BL_A`
 
-```bash
 interface ethernet1/1
   description TO-DC1_EDGE
   no switchport
@@ -958,7 +756,6 @@ interface ethernet1/2
   description TO-DC2_EDGE
   no switchport
   ip address 172.16.0.6/30
-```
 
 #### `BL_B`
 
@@ -972,15 +769,11 @@ interface ethernet1/2
   description TO-DC2_EDGE
   no switchport
   ip address 172.16.0.14/30
-```
-
----
 
 ### eBGP configuration (example)
 
 #### `BL_A`
 
-```bash
 router bgp 65000
   router-id 10.255.1.1
 
@@ -1007,11 +800,9 @@ router bgp 65000
     neighbor 172.16.0.5 remote-as 65101
     address-family ipv4 unicast
       send-community both
-```
 
 #### `BL_B`
 
-```bash
 router bgp 65000
   router-id 10.255.1.2
 
@@ -1038,9 +829,6 @@ router bgp 65000
     neighbor 172.16.0.13 remote-as 65101
     address-family ipv4 unicast
       send-community both
-```
-
----
 
 ### How it behaves (control plane)
 
@@ -1062,41 +850,19 @@ This design tolerates failure of:
 * a border leaf  
 * one DC edge  
 
----
-
-## Route Flow — EVPN ↔ VRF ↔ eBGP
-
-### Why this matters
-
-Without this piece, the fabric only works internally.
-
-This is what makes:
-
-* cameras reachable from the DC  
-* sensors reachable from applications  
-* return traffic actually work  
-
----
-
 ### Mental model
 
 There are three stages:
 
-```text
 EVPN (fabric learning)
         ↓
 VRF routing table (decision point)
         ↓
 eBGP (northbound to DC)
-```
 
 And the reverse:
 
-```text
 DC → eBGP → VRF → EVPN → destination leaf
-```
-
----
 
 ### Step-by-step flow
 
@@ -1116,8 +882,6 @@ Other leafs learn:
 
 > `192.168.110.11` is behind VTEP `10.255.10.1`
 
----
-
 #### 2. Border leaf imports EVPN into VRF
 
 At `BL_A` / `BL_B`:
@@ -1129,21 +893,16 @@ So the border leaf knows:
 
 > `192.168.110.0/24` → reachable via EVPN  
 
----
-
 #### 3. Export to DC via eBGP
 
 Routes are advertised northbound:
 
-```text
 VRF_CAMERAS → eBGP → DC
-```
 
 DC learns:
 
 > `192.168.110.0/24` via `BL_A` / `BL_B`
 
----
 
 #### 4. Return traffic from DC
 
@@ -1161,16 +920,12 @@ Flow:
 5. sends to correct leaf  
 6. leaf delivers to endpoint  
 
----
-
 ### Key idea
 
 The border leaf is the **translation point** between:
 
 * EVPN (fabric control plane)  
 * traditional IP routing (DC side)  
-
----
 
 ### Important nuance
 
@@ -1185,7 +940,6 @@ That allows:
 
 No mixing between domains.
 
----
 
 ### Why `redistribute direct` works here
 
@@ -1196,20 +950,12 @@ Because:
 
 So redistribution exposes those routes to the DC.
 
----
-
 ### Cleaner version later
 
 You can later improve this with:
 
 * route-maps  
 * prefix filtering  
-
-For now:
-
-👉 keep it simple and predictable  
-
----
 
 ### End-to-end example
 
@@ -1221,8 +967,6 @@ For now:
 4. Border leaf routes in VRF  
 5. Sent via eBGP to DC  
 
----
-
 #### DC → Camera
 
 1. DC sends to border leaf  
@@ -1232,47 +976,12 @@ For now:
 5. delivered to correct leaf  
 6. sent to camera  
 
----
-
-### What to sanity check
-
-On a border leaf:
-
-```bash
-show bgp vrf VRF_CAMERAS ipv4 unicast
-```
-
-Should show:
-
-* EVPN-learned prefixes  
-* advertised prefixes to DC  
-
-```bash
-show bgp l2vpn evpn
-```
-
-Should show:
-
-* MAC/IP routes from all sites  
-
-```bash
-show ip route vrf VRF_CAMERAS
-```
-
-Should show:
-
-* local subnets  
-* EVPN-learned remote subnets  
-
----
-
 ### Big takeaway
 
 This is the full path:
 
-```text
 EVPN → VRF → eBGP → DC
-```
+
 
 and back the same way.
 
