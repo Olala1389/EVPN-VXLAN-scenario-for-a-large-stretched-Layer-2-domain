@@ -1,20 +1,3 @@
-# EVPN-VXLAN Scenario: Large Stretched Layer 2 Domain
-
-This repository documents an EVPN-VXLAN scenario for a large stretched Layer 2 domain spanning two data centres connected over an IP backbone.
-
----
-
-## Network Topology Diagram
-
-The diagram below illustrates the full topology. The raw Graphviz source is in [`evpn-vxlan-topology.dot`](evpn-vxlan-topology.dot) and the rendered image is [`evpn-vxlan-topology.png`](evpn-vxlan-topology.png).
-
-![EVPN-VXLAN Topology](evpn-vxlan-topology.png)
-
----
-
-## Graphviz Source Code
-
-```dot
 digraph EVPN_VXLAN_Topology {
     graph [
         label="EVPN-VXLAN Scenario: Large Stretched Layer 2 Domain"
@@ -194,31 +177,3 @@ digraph EVPN_VXLAN_Topology {
         lg5 -> lg6 [style=invis]
     }
 }
-```
-
----
-
-## Topology Overview
-
-| Component | Role |
-|---|---|
-| **IP Backbone** | Inter-DC IP transport (MPLS or plain IP) |
-| **Spine switches** | Underlay routing + eBGP EVPN peering across the WAN |
-| **BGP Route Reflectors** | Distribute EVPN type-2 (MAC/IP) and type-3 (IMET) routes within each DC |
-| **Leaf switches (VTEPs)** | Encapsulate/decapsulate VXLAN frames; one VNI (10000) stretches L2 across both DCs |
-| **Servers** | End-hosts on the stretched VLAN (192.168.10.0/24) |
-
-### Key design points
-
-- **VXLAN VNI 10000** maps to VLAN 10 on all leaf switches, creating a single stretched broadcast domain across DC1 and DC2.
-- **EVPN** (BGP address-family `l2vpn evpn`) provides the control plane for MAC/IP advertisement and suppresses flooding via type-3 (IMET) routes.
-- **BGP Route Reflectors** (one pair per DC) scale the iBGP mesh inside each DC; the spine switches carry eBGP EVPN sessions across the IP backbone.
-- **Underlay** uses OSPF or IS-IS inside each DC to provide reachability between loopback addresses used as VTEP tunnel endpoints.
-
-### Regenerating the diagram
-
-```bash
-dot -Tpng evpn-vxlan-topology.dot -o evpn-vxlan-topology.png
-# or SVG for lossless scaling:
-dot -Tsvg evpn-vxlan-topology.dot -o evpn-vxlan-topology.svg
-```
