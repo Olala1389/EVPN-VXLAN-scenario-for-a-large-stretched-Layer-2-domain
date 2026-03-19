@@ -1,1 +1,1 @@
-# EVPN-VXLAN-scenario-for-a-large-stretched-Layer-2-domain
+![EVPN Fabric](./graphviz_site_diagram.svg)
