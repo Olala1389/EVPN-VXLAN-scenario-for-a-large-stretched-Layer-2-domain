@@ -1,0 +1,1086 @@
+````markdown
+# EVPN VXLAN Fabric — Build Notes
+
+This is a practical breakdown of how the fabric is put together, one layer at a time.
+
+The goal here is simple: make the setup readable for someone technical who needs to understand both the concept and the implementation. Each section follows the same pattern:
+
+- why we’re using the technology
+- what devices are involved
+- how it behaves
+- what else we could have used, and why we are not going that route
+- example configs
+
+---
+
+## 1. MLAG / vPC (Leaf Pairing at the Edge)
+
+### Why we’re doing this
+
+Every site/location has two leaf switches, but the end devices:
+
+- do not run routing
+- cannot do anything fancy
+- must keep the same IP
+- expect what looks like a normal access switch
+
+So we need two switches to behave like one logical switch. That is exactly what MLAG / vPC gives us.
+
+### What problem this solves
+
+Without MLAG:
+
+- a device connects to only one leaf → **single point of failure**
+- or it connects to both leafs → **loop / STP / blocked links / old problems come back**
+
+With MLAG / vPC:
+
+- the device sees one logical switch
+- both leafs are active
+- there is no STP dependency for that pair
+- both links can actually be used
+
+### Alternatives (and why we’re not using them)
+
+#### Single-homed access
+- simplest
+- ❌ no redundancy
+
+#### STP-based dual connection
+- ❌ blocked links
+- ❌ slow convergence
+- ❌ exactly what we’re trying to get away from
+
+#### EVPN multihoming (ESI)
+- modern and clean
+- removes the need for an MLAG peer-link
+
+But for this environment:
+- ❌ more complex
+- ❌ not always supported consistently
+- ❌ harder to operate initially
+
+So MLAG / vPC is the practical and stable choice here.
+
+### What devices are involved
+
+Per site:
+
+- Leaf A
+- Leaf B
+
+Between them:
+
+- peer-link (L2 trunk)
+- keepalive link (L3)
+
+### How it behaves
+
+#### From the endpoint perspective
+
+The device sees:
+
+- one switch
+- one gateway
+- one L2 domain
+
+Even though physically it is connected like this:
+
+```text
+Device ── Leaf A
+       └─ Leaf B
+````
+
+#### Inside the pair
+
+* both leafs share MAC state
+* both coordinate forwarding
+* one is primary and one is secondary for control-plane role
+* both are still active for forwarding
+
+#### Interaction with EVPN
+
+Each leaf is still:
+
+* its own VTEP
+* its own control-plane node
+
+But:
+
+* they advertise consistent information
+* they use the same anycast gateway
+* EVPN sees them as separate but aligned endpoints
+
+### Traffic flow examples
+
+#### Case 1 — Device → fabric
+
+1. Device sends traffic
+2. Either leaf receives it
+3. Leaf routes locally using the anycast gateway
+4. Traffic is sent into the VXLAN fabric
+
+#### Case 2 — Fabric → device
+
+1. Traffic arrives at the correct leaf through EVPN
+2. If the device is local, it is delivered directly
+3. If needed, the peer-link can be used internally
+
+#### Case 3 — Leaf failure
+
+* one leaf dies
+* the device is still connected to the other
+* traffic keeps flowing
+
+### Key design rules
+
+* MLAG is local to the site only
+* MLAG is not extended across the fabric
+* there is no STP across the fabric
+* the peer-link is not a transit path for fabric traffic
+
+### Config — NX-OS style example
+
+#### 1. Enable features
+
+```bash
+feature vpc
+feature lacp
+```
+
+#### 2. Keepalive link (L3)
+
+**Leaf A**
+
+```bash
+interface ethernet1/1
+  description MLAG-KEEPALIVE
+  no switchport
+  ip address 192.168.255.1/30
+```
+
+**Leaf B**
+
+```bash
+interface ethernet1/1
+  description MLAG-KEEPALIVE
+  no switchport
+  ip address 192.168.255.2/30
+```
+
+#### 3. vPC domain
+
+**Leaf A**
+
+```bash
+vpc domain 10
+  role priority 10
+  peer-keepalive destination 192.168.255.2
+```
+
+**Leaf B**
+
+```bash
+vpc domain 10
+  role priority 20
+  peer-keepalive destination 192.168.255.1
+```
+
+#### 4. Peer-link (critical)
+
+```bash
+interface port-channel100
+  description MLAG-PEER-LINK
+  switchport
+  switchport mode trunk
+  spanning-tree port type network
+  vpc peer-link
+```
+
+Add member interfaces:
+
+```bash
+interface ethernet1/49
+  channel-group 100 mode active
+
+interface ethernet1/50
+  channel-group 100 mode active
+```
+
+#### 5. Access port-channel to device
+
+This is where the dual-homed device actually attaches.
+
+```bash
+interface port-channel10
+  description DEVICE-LAG
+  switchport
+  switchport mode access
+  switchport access vlan 110
+  vpc 10
+```
+
+#### 6. Device side
+
+If supported:
+
+* configure LACP (preferred)
+
+If not:
+
+* static LAG still works
+
+### Interaction with Anycast Gateway
+
+This is a key part of why the pair works cleanly.
+
+Both leafs have:
+
+```bash
+fabric forwarding anycast-gateway-mac 0000.2222.3333
+```
+
+and:
+
+```bash
+interface vlan110
+  ip address 192.168.110.1/24
+```
+
+So:
+
+* the device always uses the same gateway
+* both leafs can respond
+* traffic exits locally
+
+### Failure scenarios
+
+#### Peer-link failure
+
+* one leaf becomes isolated
+* the secondary typically shuts down vPC ports to avoid split brain
+
+#### One leaf down
+
+* no impact to the endpoint
+* no host-level reconvergence required
+
+#### Uplink failure (leaf → spine)
+
+* ECMP handles it
+* traffic shifts automatically
+
+### What to check
+
+```bash
+show vpc
+```
+
+You want to see:
+
+* peer status: up
+* consistency: success
+
+```bash
+show port-channel summary
+```
+
+You want to see:
+
+* members active
+
+```bash
+show mac address-table
+```
+
+You want to see:
+
+* MACs learned on the correct interfaces
+
+### Big picture takeaway
+
+MLAG / vPC gives you:
+
+* physical redundancy
+* active-active forwarding
+* no STP dependency
+* clean integration with EVPN
+
+It is what makes the design feel like simple access switching at the edge, while still plugging into a distributed fabric.
+
+---
+
+## 2. OSPF Underlay
+
+### Why we’re using this
+
+We need a simple, reliable IP fabric underneath everything.
+
+OSPF is doing one job here:
+
+> make sure every loopback and routed link is reachable, with ECMP
+
+Nothing tenant-related lives here. No VLAN logic, no MAC learning — just transport.
+
+It is also easy to troubleshoot, which matters in an industrial environment.
+
+### What else we could use (and why we’re not)
+
+#### eBGP underlay
+
+* very popular in data center fabrics
+* better policy control at scale
+* ❌ more operational overhead for this environment
+
+#### IS-IS
+
+* very solid for large fabrics
+* ❌ less familiar for most teams
+
+OSPF is the most straightforward choice here.
+
+### Who participates
+
+* spines
+* all leafs (site leafs and border leafs)
+
+### How it behaves
+
+* leafs peer with spines
+* spines act as the transit core
+* everything learns:
+
+  * loopbacks (VTEPs, router-IDs)
+  * point-to-point links
+* ECMP exists across both spines
+
+### Config — Spine (example `SP1`)
+
+```bash
+feature ospf
+feature interface-vlan
+
+hostname SP1
+
+interface loopback0
+  ip address 10.255.255.1/32
+  ip router ospf UNDERLAY area 0.0.0.0
+
+interface ethernet1/1
+  description TO-BL_A
+  no switchport
+  ip address 10.0.0.0/31
+  ip ospf network point-to-point
+  ip router ospf UNDERLAY area 0.0.0.0
+
+interface ethernet1/2
+  description TO-BL_B
+  no switchport
+  ip address 10.0.0.4/31
+  ip ospf network point-to-point
+  ip router ospf UNDERLAY area 0.0.0.0
+
+router ospf UNDERLAY
+  router-id 10.255.255.1
+  log-adjacency-changes
+```
+
+### Config — Leaf (example `CAB1_A`)
+
+```bash
+feature ospf
+
+hostname CAB1_A
+
+interface loopback0
+  description VTEP
+  ip address 10.255.10.1/32
+  ip router ospf UNDERLAY area 0.0.0.0
+
+interface loopback1
+  description BGP-RID
+  ip address 10.255.110.1/32
+  ip router ospf UNDERLAY area 0.0.0.0
+
+interface ethernet1/49
+  description TO-SP1
+  no switchport
+  ip address 10.0.1.1/31
+  ip ospf network point-to-point
+  ip router ospf UNDERLAY area 0.0.0.0
+
+interface ethernet1/50
+  description TO-SP2
+  no switchport
+  ip address 10.0.1.5/31
+  ip ospf network point-to-point
+  ip router ospf UNDERLAY area 0.0.0.0
+
+router ospf UNDERLAY
+  router-id 10.255.110.1
+  log-adjacency-changes
+```
+
+---
+
+## 3. BGP EVPN Overlay
+
+### Why we’re using this
+
+This is the control plane for the fabric.
+
+EVPN is what tells the network:
+
+* where MACs live
+* which VTEP owns which endpoint
+* how to reach subnets across sites
+
+Without EVPN, VXLAN gets messy quickly with flooding, unknown unicast handling, and weak visibility.
+
+### Alternatives (and why we’re not using them)
+
+#### Flood-and-learn VXLAN
+
+* ❌ too much broadcast / unknown traffic
+* ❌ not scalable
+
+#### Static VXLAN
+
+* ❌ operational nightmare
+
+#### Traditional L2 stretch
+
+* ❌ brings back STP problems we are trying to eliminate
+
+EVPN is the clean solution here.
+
+### Who participates
+
+* all leafs
+* border leafs
+
+Spines are intentionally not involved. They stay OSPF-only.
+
+### How it behaves
+
+* leafs advertise:
+
+  * MAC/IP bindings
+  * VLAN/VNI information
+* other leafs learn those routes through BGP
+* traffic is sent directly to the correct VTEP
+
+### Config — Leaf (example `CAB1_A`)
+
+```bash
+feature bgp
+feature nv overlay
+nv overlay evpn
+
+router bgp 65000
+  router-id 10.255.110.1
+
+  address-family l2vpn evpn
+    retain route-target all
+
+  neighbor 10.255.1.1
+    remote-as 65000
+    update-source loopback1
+    address-family l2vpn evpn
+      send-community
+      send-community extended
+
+  neighbor 10.255.1.2
+    remote-as 65000
+    update-source loopback1
+    address-family l2vpn evpn
+      send-community
+      send-community extended
+```
+
+### Config — Border Leaf (example `BL_A`)
+
+```bash
+feature bgp
+feature nv overlay
+nv overlay evpn
+
+router bgp 65000
+  router-id 10.255.1.1
+
+  address-family l2vpn evpn
+    retain route-target all
+
+  neighbor 10.255.110.1
+    remote-as 65000
+    update-source loopback1
+    address-family l2vpn evpn
+      send-community
+      send-community extended
+```
+
+---
+
+## 4. VXLAN (Data Plane)
+
+### Why we’re using this
+
+VXLAN is what actually carries traffic across the fabric.
+
+It lets us:
+
+* keep VLANs at the edge
+* move traffic over Layer 3
+* avoid spanning tree completely
+
+### Alternatives (and why we’re not using them)
+
+#### Pure Layer 3 only
+
+* would require renumbering
+* ❌ not allowed in this environment
+
+#### MPLS
+
+* possible
+* ❌ overkill for this environment
+
+### How it behaves
+
+* local device to leaf = normal L2
+* leaf encapsulates into VXLAN
+* fabric routes to destination leaf
+* destination leaf decapsulates and delivers locally
+
+### Config — Leaf
+
+```bash
+feature vn-segment-vlan-based
+
+vlan 110
+  vn-segment 50110
+
+vlan 210
+  vn-segment 50210
+
+interface nve1
+  no shutdown
+  host-reachability protocol bgp
+  source-interface loopback0
+
+  member vni 50110
+    ingress-replication protocol bgp
+
+  member vni 50210
+    ingress-replication protocol bgp
+```
+
+---
+
+## 5. VRFs (Segmentation)
+
+### Why we’re using this
+
+We do not want cameras and sensors in the same routing domain.
+
+VRFs give us:
+
+* isolation
+* policy control later
+* a cleaner long-term design
+
+### Alternatives (and why we’re not using them)
+
+#### Single VRF
+
+* ❌ everything can talk to everything
+
+#### ACL-only segmentation
+
+* ❌ harder to scale and manage
+
+### Config
+
+```bash
+vrf context VRF_CAMERAS
+  vni 51000
+  rd auto
+  address-family ipv4 unicast
+    route-target both auto
+    route-target both auto evpn
+
+vrf context VRF_SENSORS
+  vni 52000
+  rd auto
+  address-family ipv4 unicast
+    route-target both auto
+    route-target both auto evpn
+```
+
+---
+
+## 6. Anycast Gateway
+
+### Why we’re using this
+
+Every site uses the same gateway IP, but it is active on both leafs.
+
+That gives us:
+
+* no HSRP
+* no active/standby bottleneck
+* local exit from the site
+
+### Alternatives (and why we’re not using them)
+
+#### HSRP / VRRP
+
+* ❌ active/standby
+* ❌ inefficient paths
+
+#### Centralized gateway
+
+* ❌ hairpins traffic across the fabric
+
+### Config
+
+```bash
+fabric forwarding anycast-gateway-mac 0000.2222.3333
+
+interface vlan110
+  no shutdown
+  vrf member VRF_CAMERAS
+  ip address 192.168.110.1/24
+  fabric forwarding mode anycast-gateway
+
+interface vlan210
+  no shutdown
+  vrf member VRF_SENSORS
+  ip address 192.168.210.1/24
+  fabric forwarding mode anycast-gateway
+```
+
+---
+
+## 7. Border Leaf Northbound Connectivity to the DCs
+
+### Why we’re doing it this way
+
+The DC is outside the EVPN fabric, so we treat it as a separate routing domain and connect to it over Layer 3 links from the border leafs.
+
+Each border leaf is dual-homed into both DCs:
+
+* `BL_A` → DC1 and DC2
+* `BL_B` → DC1 and DC2
+
+That gives us multiple northbound paths and avoids tying any DC reachability to a single device or link.
+
+We are using **eBGP** between the border leafs and the DC edges.
+
+The main reasons for that:
+
+* it creates a clean boundary between the fabric and the DC
+* it handles multiple uplinks and failover naturally
+* it gives us control over which DC is preferred
+* it scales cleanly if we add more prefixes or services later
+
+Static routing would work, but it becomes awkward with four uplinks and multiple VRFs. OSPF could be extended northbound, but that mixes the fabric underlay with external routing, which we want to avoid.
+
+### Alternatives (and why we’re not using them)
+
+#### Stretch VLANs into the DC
+
+* ❌ brings back Layer 2 problems
+
+#### Central firewall only
+
+* ❌ less flexible routing
+
+#### Static routing northbound
+
+* simple initially
+* ❌ awkward with four uplinks and multiple VRFs
+
+#### OSPF northbound
+
+* possible
+* ❌ blurs the boundary between underlay transport and external routing
+
+### How it behaves
+
+In steady state:
+
+* both border leafs have BGP sessions to both DCs
+* both DCs learn fabric prefixes
+* the fabric learns DC prefixes
+* traffic exits based on BGP best path, and can use ECMP if desired
+
+If something fails:
+
+* a link goes down → BGP session drops → routes are withdrawn
+* traffic shifts to the remaining available paths
+
+So we can lose:
+
+* a single link
+* a border leaf
+* or one DC edge
+
+and still keep northbound connectivity.
+
+### Physical layout
+
+```text
+BL_A ─── DC1
+BL_A ─── DC2
+
+BL_B ─── DC1
+BL_B ─── DC2
+```
+
+### Interface example
+
+#### `BL_A`
+
+```bash
+interface ethernet1/1
+  description TO-DC1_EDGE
+  no switchport
+  ip address 172.16.0.2/30
+
+interface ethernet1/2
+  description TO-DC2_EDGE
+  no switchport
+  ip address 172.16.0.6/30
+```
+
+#### `BL_B`
+
+```bash
+interface ethernet1/1
+  description TO-DC1_EDGE
+  no switchport
+  ip address 172.16.0.10/30
+
+interface ethernet1/2
+  description TO-DC2_EDGE
+  no switchport
+  ip address 172.16.0.14/30
+```
+
+### eBGP configuration (example)
+
+#### `BL_A`
+
+```bash
+router bgp 65000
+  router-id 10.255.1.1
+
+  vrf VRF_CAMERAS
+    neighbor 172.16.0.1 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+
+    neighbor 172.16.0.5 remote-as 65101
+    address-family ipv4 unicast
+      send-community both
+
+  vrf VRF_SENSORS
+    neighbor 172.16.0.1 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+
+    neighbor 172.16.0.5 remote-as 65101
+    address-family ipv4 unicast
+      send-community both
+```
+
+#### `BL_B`
+
+```bash
+router bgp 65000
+  router-id 10.255.1.2
+
+  vrf VRF_CAMERAS
+    neighbor 172.16.0.9 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+
+    neighbor 172.16.0.13 remote-as 65101
+    address-family ipv4 unicast
+      send-community both
+
+  vrf VRF_SENSORS
+    neighbor 172.16.0.9 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+
+    neighbor 172.16.0.13 remote-as 65101
+    address-family ipv4 unicast
+      send-community both
+```
+
+### One important note
+
+Even though the links are global Layer 3 interfaces, the actual routing is happening inside each VRF. That is what allows:
+
+* camera traffic → handled inside `VRF_CAMERAS`
+* sensor traffic → handled inside `VRF_SENSORS`
+
+without mixing them.
+
+---
+
+## 8. Route Flow — EVPN ↔ VRF ↔ eBGP (Northbound Integration)
+
+### Why this section matters
+
+Without this, the fabric is just internally consistent.
+
+This is what makes:
+
+* cameras reachable from the DC
+* sensors reachable from applications
+* return traffic actually work
+
+### Mental model
+
+There are three stages:
+
+```text
+[ EVPN ] → [ VRF routing table ] → [ eBGP to DC ]
+```
+
+And the reverse path is:
+
+```text
+[ DC routes ] → [ eBGP ] → [ VRF ] → [ EVPN ] → [ destination leaf ]
+```
+
+### Step-by-step flow
+
+#### 1. Inside the fabric (EVPN)
+
+Let’s say:
+
+* camera at CAB1 = `192.168.110.11`
+* it lives in `VRF_CAMERAS`
+
+At `CAB1_A`:
+
+* it is learned locally on VLAN 110
+* it is advertised into EVPN
+
+Other leafs learn:
+
+> `192.168.110.11` lives behind VTEP `10.255.10.1`
+
+#### 2. Border leaf receives EVPN routes
+
+At `BL_A` / `BL_B`:
+
+* EVPN routes are imported into the VRF
+* now they exist in the `VRF_CAMERAS` routing table
+
+So the border leaf knows:
+
+> `192.168.110.0/24` → reachable via EVPN
+
+#### 3. Export to DC via eBGP
+
+Now we take those VRF routes and advertise them northbound.
+
+So the flow is:
+
+```text
+VRF_CAMERAS → eBGP → DC
+```
+
+The DC learns:
+
+> `192.168.110.0/24` → via `BL_A` / `BL_B`
+
+#### 4. Return traffic from DC
+
+Now the DC sends traffic back:
+
+* source: DC server
+* destination: `192.168.110.11`
+
+Flow:
+
+1. DC sends to border leaf via BGP
+2. Border leaf looks in `VRF_CAMERAS`
+3. It sees the EVPN route
+4. It encapsulates into VXLAN
+5. It sends to the correct leaf
+6. The leaf delivers to the endpoint
+
+### Key idea
+
+The border leaf is the translation point between:
+
+* the EVPN world inside the fabric
+* the IP routing world in the DC
+
+### Alternatives (and why we’re not using them)
+
+#### Leak everything globally
+
+* ❌ destroys VRF separation
+
+#### Static redistribution hacks
+
+* ❌ fragile
+* ❌ hard to scale
+
+#### Centralized firewall insertion for everything
+
+* ❌ introduces bottlenecks
+* ❌ causes hairpinning
+
+### Config — making this actually work
+
+There are two important pieces.
+
+#### 1. The VRF must participate in EVPN
+
+This part already exists:
+
+```bash
+vrf context VRF_CAMERAS
+  vni 51000
+  rd auto
+  address-family ipv4 unicast
+    route-target both auto
+    route-target both auto evpn
+```
+
+This is what imports EVPN routes into the VRF.
+
+#### 2. The VRF must advertise into BGP northbound
+
+This is the part that connects the VRF to the DC.
+
+##### Example — `BL_A`
+
+```bash
+router bgp 65000
+  vrf VRF_CAMERAS
+    address-family ipv4 unicast
+      redistribute direct
+```
+
+This does two things:
+
+* takes connected and learned routes in the VRF
+* advertises them to DC neighbors
+
+##### Add neighbor (DC side)
+
+```bash
+router bgp 65000
+  vrf VRF_CAMERAS
+    neighbor 172.16.0.1 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+```
+
+##### Same for sensors
+
+```bash
+router bgp 65000
+  vrf VRF_SENSORS
+    address-family ipv4 unicast
+      redistribute direct
+
+    neighbor 172.16.0.1 remote-as 65100
+    address-family ipv4 unicast
+      send-community both
+```
+
+### Important nuance
+
+#### Why `redistribute direct` works here
+
+Because:
+
+* SVIs like `192.168.110.1/24` are directly connected
+* EVPN installs host / subnet routes into the VRF
+
+So redistribution exposes those routes to the DC.
+
+### Cleaner version later
+
+Instead of blanket redistribution, you can later:
+
+* use route-maps
+* filter which prefixes go northbound
+
+For now, keeping it simple is fine.
+
+### End-to-end example
+
+#### Camera → DC
+
+1. Camera sends packet
+2. Leaf routes locally using the anycast gateway
+3. VXLAN across the fabric to a border leaf
+4. Border leaf routes via the VRF
+5. Sent northbound via eBGP
+
+#### DC → Camera
+
+1. DC sends to border leaf using the BGP route
+2. Border leaf looks in the VRF
+3. Finds the EVPN route
+4. Encapsulates in VXLAN
+5. Delivers to the correct leaf
+6. Sent to the camera
+
+### What to sanity check
+
+On a border leaf:
+
+```bash
+show bgp vrf VRF_CAMERAS ipv4 unicast
+```
+
+You should see:
+
+* EVPN-learned prefixes
+* advertised prefixes to the DC
+
+```bash
+show bgp l2vpn evpn
+```
+
+You should see:
+
+* MAC/IP routes from all sites
+
+```bash
+show ip route vrf VRF_CAMERAS
+```
+
+You should see:
+
+* local subnets
+* EVPN remote subnets
+
+### Big takeaway
+
+This is the route flow:
+
+```text
+EVPN (fabric learning)
+        ↓
+VRF routing table (decision point)
+        ↓
+eBGP (northbound to DC)
+```
+
+And back the same way in reverse.
+
+```
+```
